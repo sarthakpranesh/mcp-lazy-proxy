@@ -54,7 +54,7 @@ export class BackendManager {
   // eagerly connect to the favorite backends and collect their tool schemas,
   // along with a map of each tool name to its owning backend.
   // a backend that fails to load is skipped so one bad favorite can't crash the proxy.
-  async loadFavorites(): Promise<{ tools: BackendTool[]; owner: Map<string, string> }> {
+  async loadFavorites(): Promise<{ tools: BackendTool[]; owner: Map<string, { backend: string; realToolName: string }> }> {
     const names = this.favorites();
     const sets = await Promise.all(
       names.map(async (n) => {
@@ -65,11 +65,19 @@ export class BackendManager {
         }
       }),
     );
-    const tools = sets.flatMap((s) => s.tools);
-    const owner = new Map<string, string>();
+    const tools: BackendTool[] = [];
+    const owner = new Map<string, { backend: string; realToolName: string }>();
     for (const s of sets) {
       for (const t of s.tools) {
-        if (!owner.has(t.name)) owner.set(t.name, s.name);
+        // tool names are prefixed with the backend name so same-named tools from
+        // different backends (e.g. promptify vs promptify_personal) don't collide.
+        // has two underscores to separate the backend name from the tool name
+        const prefixed = `${s.name}__${t.name}`;
+        tools.push({ ...t, name: prefixed });
+        if (!owner.has(prefixed)) owner.set(prefixed, {
+          backend: s.name,
+          realToolName: t.name,
+        });
       }
     }
     return { tools, owner };

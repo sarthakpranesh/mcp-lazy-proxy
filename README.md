@@ -19,6 +19,7 @@ So I wrote this in a single night session. Now my "hello" costs just under 10k o
 - Supports both remote (HTTP/Streamable) and local (stdio subprocess) MCP servers
 - Per-backend `instruction` lets you tell the model what each MCP is for
 - Advertises the backend catalog via MCP `instructions`, so the model knows what's available up front
+- Mark a backend as a `favorite` to inject its schemas eagerly while the rest stay lazy
 
 ## Quick start
 

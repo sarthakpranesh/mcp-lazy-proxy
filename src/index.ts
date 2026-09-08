@@ -127,10 +127,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     // direct call to an injected favorite tool: route to its owning backend.
-    const ownerName = favoriteOwner.get(name);
-    if (ownerName) {
-      const handle = await backends.get(ownerName);
-      const result = await handle.callTool(name, (args ?? {}) as Record<string, unknown>);
+    const ownerObj = favoriteOwner.get(name);
+    if (ownerObj) {
+      const handle = await backends.get(ownerObj.backend);
+      const result = await handle.callTool(ownerObj.realToolName, (args ?? {}) as Record<string, unknown>);
       return {
         content: [
           {
