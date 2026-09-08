@@ -44,6 +44,37 @@ export class BackendManager {
     }));
   }
 
+  // return the names of backends flagged as favorites (eagerly loaded).
+  favorites(): string[] {
+    return Object.entries(this.configs)
+      .filter(([, cfg]) => cfg.favorite)
+      .map(([name]) => name);
+  }
+
+  // eagerly connect to the favorite backends and collect their tool schemas,
+  // along with a map of each tool name to its owning backend.
+  // a backend that fails to load is skipped so one bad favorite can't crash the proxy.
+  async loadFavorites(): Promise<{ tools: BackendTool[]; owner: Map<string, string> }> {
+    const names = this.favorites();
+    const sets = await Promise.all(
+      names.map(async (n) => {
+        try {
+          return { name: n, tools: await this.listTools(n) };
+        } catch {
+          return { name: n, tools: [] as BackendTool[] };
+        }
+      }),
+    );
+    const tools = sets.flatMap((s) => s.tools);
+    const owner = new Map<string, string>();
+    for (const s of sets) {
+      for (const t of s.tools) {
+        if (!owner.has(t.name)) owner.set(t.name, s.name);
+      }
+    }
+    return { tools, owner };
+  }
+
   // get a handle to a backend, connecting lazily and resetting its idle timer.
   async get(name: string): Promise<BackendHandle> {
     const cfg = this.configs[name];

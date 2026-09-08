@@ -15,10 +15,12 @@ export interface LocalBackendConfig {
   env?: Record<string, string>;
 }
 
-// a backend is either remote or local, plus an optional LLM-facing description.
+// a backend is either remote or local, plus optional metadata.
 export type BackendConfig = (RemoteBackendConfig | LocalBackendConfig) & {
   /** Optional human/LLM-facing description of what this MCP is for. */
   instruction?: string;
+  /** Eagerly inject this backend's schemas into the model context instead of keeping it lazy. */
+  favorite?: boolean;
 };
 
 // top-level shape of the proxy config file.

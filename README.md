@@ -76,6 +76,7 @@ The proxy takes a single JSON config file via `--config <path>`. It must have an
 | `args`        | No       | Arguments passed to the local command.                                      |
 | `env`         | No       | Extra environment variables for the local command.                           |
 | `instruction` | No       | Human/LLM-facing description of what this MCP is for. Shown in the catalog and returned by `get_mcp_tools`. Falls back to the mcp server's own instructions when omitted. |
+| `favorite`    | No       | `true` to inject this backend's tool schemas eagerly into the model context instead of keeping it lazy. See [Favorites](#favorites). |
 
 ## Using the proxy
 
@@ -107,6 +108,49 @@ Invoke a tool on a backend. Use the tool name and arguments returned by `get_mcp
 2. It calls `get_mcp_tools` to load a backend's schemas.
 3. It calls `call_mcp_tool` to run a tool, passing the discovered arguments.
 
+## Favorites
+
+All-lazy guarantees the smallest context footprint, but every call first pays a `get_mcp_tools` round-trip to bring the backend's schemas into context. Mark a backend as a `favorite` and its schemas are injected up front instead — so the model can call its tools directly, no discovery step required. The rest stay lazy.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer <TOKEN>" },
+      "favorite": true,
+      "instruction": "GitHub: issues, pull requests, code search."
+    }
+  }
+}
+```
+
+Pick a handful you reach for every session; leave long-tail backends lazy.
+
+## Benchmark
+
+`bench.mjs` compares three modes against a backend of your choice: all-lazy, favorites (that one backend eager), and all-eager. It measures injected schemas, approximated context tokens, and end-to-end latency of one real tool call ( skips the impact added from extra inference required from get_mcp_tools to call_mcp_tool, but added manually ).
+
+```bash
+npm run build
+node bench.mjs            # defaults to the github backend
+BENCH_MCP="promptify" BENCH_TOOL="get_prompts" node bench.mjs
+```
+
+Sample output for `BENCH_MCP=github` and `BENCH_TOOL=get_me`:
+
+| mode      | injected tools | context (approx tokens) | end-to-end call | impact from added inference |
+| --------- | -------------- | ----------------------- | --------------- | --------------------------- |
+| lazy      | 2              | 167                     | 3.69s           | high                        |
+| favorites | 46             | 9845                    | 437ms           | non fav - high, fav - none  |
+| all       | 118            | 31820                   | 417ms           | none                        |
+
+Impact on context: github mcp as favorite adds 9678 tokens vs all-lazy this is highly dependent on which mcp(s) you add to favorites; all-eager adds 31820 tokens for all my 9 MCPs vs all-lazy.
+
+latency: favorites first-call 3.25s faster than all-lazy, without the time taken in inference from get_mcp_tools to call_mcp_tool. For cloud models this will be fast, for local models this might add a second.
+
+The numbers are approximate — token count is estimated at 4 chars/token and excludes the model's own prompt overhead — but the shape is consistent: all-lazy is the cheapest, all-eager the fastest, favorites sits somewhere in the middle.
+
 ## Troubleshooting
 
 | Problem                          | What to try                                                                                          |
@@ -119,7 +163,7 @@ Invoke a tool on a backend. Use the tool name and arguments returned by `get_mcp
 
 ## Contributing
 
-Want to change code, fix bugs, or improve docs? The project is a small TypeScript MCP server. `src/index.ts` wires up the two meta-tools, `src/backend.ts` manages lazy connections and caching, and `src/config.ts` parses the config. Run `npm run typecheck` to typecheck and `node smoke.mjs` for a smoke test against your local mcp instance.
+Want to change code, fix bugs, or improve docs? The project is a small TypeScript MCP server. `src/index.ts` wires up the meta-tools and eager favorites, `src/backend.ts` manages lazy connections and caching, and `src/config.ts` parses the config. Run `npm run typecheck` to typecheck, `node smoke.mjs` for a smoke test, and `node bench.mjs` for the benchmark against your local MCP config.
 
 <p align="left">
   With love from India 🇮🇳

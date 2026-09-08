@@ -22,6 +22,11 @@ const { configPath } = parseArgs(process.argv.slice(2));
 const config = loadConfig(configPath);
 const backends = new BackendManager(config.mcpServers);
 
+// eagerly load the tool schemas of any favorite backends so they are injected
+// into context up front (remaining backends stay lazy). also returns a map of
+// each eager tool name to its owning backend so direct calls route correctly.
+const { tools: favoriteTools, owner: favoriteOwner } = await backends.loadFavorites();
+
 // advertised server instructions: a brief blurb plus the backend catalog.
 const instructions = [
   "Lazy MCP proxy. Backend MCP servers are not loaded into context by default; discover them on demand.",
@@ -40,9 +45,10 @@ const server = new Server(
   { capabilities: { tools: {} }, instructions },
 );
 
-// advertise the two meta-tools to the client.
+// advertise the meta-tools plus any eagerly-loaded favorite backend schemas.
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    ...favoriteTools,
     {
       name: "get_mcp_tools",
       description:
@@ -110,6 +116,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const toolArgs = (args?.arguments ?? {}) as Record<string, unknown>;
       const handle = await backends.get(mcp);
       const result = await handle.callTool(tool, toolArgs);
+      return {
+        content: [
+          {
+            type: "text",
+            text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+
+    // direct call to an injected favorite tool: route to its owning backend.
+    const ownerName = favoriteOwner.get(name);
+    if (ownerName) {
+      const handle = await backends.get(ownerName);
+      const result = await handle.callTool(name, (args ?? {}) as Record<string, unknown>);
       return {
         content: [
           {
