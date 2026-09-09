@@ -10,6 +10,17 @@ With 9 MCP servers wired up (GitHub, Sentry, n8n, etc), a plain "hello" was eati
 
 So I wrote this in a single night session. Now my "hello" costs just under 10k of context :>
 
+## What makes this different
+
+Other lazy MCP proxies are all-or-nothing: they either keep every backend lazy or inject everything eagerly. This proxy is the only one that lets you pick a middle ground.
+
+- **Favorites** — mark a handful of backends you reach for every session as `favorite` and their schemas are injected up front (no discovery round-trip), while the rest stay lazy. A real context-vs-latency knob, not a binary choice.
+- **Live discovery, no build step** — tools are fetched on demand at runtime. No pre-generated tool hierarchy to keep in sync.
+- **Filtered discovery** — `get_mcp_tools` takes `query` and `limit`, so the model pulls only the relevant subset of a backend's schemas.
+- **Connection lifecycle** — backends connect lazily and auto-close after 5 minutes idle, so resources aren't held for the whole session.
+- **Remote + local** — one proxy handles both HTTP/Streamable and stdio backends.
+- **Measured, not guessed** — `bench.mjs` quantifies the lazy/favorites/all-eager tradeoff with real numbers.
+
 ## Features
 
 - Only two tool schemas injected into the model context, no matter how many backends you configure
