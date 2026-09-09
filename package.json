@@ -1,6 +1,6 @@
 {
   "name": "@sarthakpranesh/mcp-lazy-proxy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Lazy MCP proxy: exposes get_mcp_tools / call_mcp_tool meta-tools that load backend MCP servers on demand, so only two tool schemas are injected into the model context.",
   "type": "module",
   "bin": {
