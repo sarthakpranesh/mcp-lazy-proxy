@@ -67,8 +67,8 @@ Point your MCP client at it as a stdio server. For example, in an MCP client con
 {
   "mcpServers": {
     "lazy-proxy": {
-      "command": "node",
-      "args": ["/path/to/mcp-lazy-proxy/dist/index.js", "--config", "/path/to/mcp.json"]
+      "command": "npx",
+      "args": ["-y", "@sarthakpranesh/mcp-lazy-proxy", "--config", "/path/to/mcp.json"]
     }
   }
 }
