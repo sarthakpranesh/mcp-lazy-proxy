@@ -2,11 +2,20 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { homedir } from "node:os";
 import { loadConfig } from "./config.js";
 import { BackendManager } from "./backend.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const CONFIG_ARG = "--config";
+
+// expand a leading "~" to the user's home directory, since the proxy may be
+// spawned without a shell (e.g. by an MCP client) where "~" is not expanded.
+function expandHome(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return `${homedir()}${p.slice(1)}`;
+  return p;
+}
 
 // parse the --config <path> CLI argument.
 function parseArgs(argv: string[]): { configPath: string } {
@@ -14,7 +23,7 @@ function parseArgs(argv: string[]): { configPath: string } {
   if (idx === -1 || !argv[idx + 1]) {
     throw new Error(`usage: mcp-lazy-proxy ${CONFIG_ARG} <path-to-config.json>`);
   }
-  return { configPath: argv[idx + 1] };
+  return { configPath: expandHome(argv[idx + 1]) };
 }
 
 // load config and build the backend manager.
