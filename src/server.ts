@@ -99,9 +99,19 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
     if (req.method === "POST" && req.url === "/mcp") {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-      // resume an existing session via its transport
-      if (sessionId && sessions.has(sessionId)) {
-        const entry = sessions.get(sessionId)!;
+      // a request carrying a session id for a session we don't know about
+      // (evicted by idle timeout, or lost on a restart) must be rejected so the
+      // client tears down and issues a fresh initialize. silently creating an
+      // uninitialized transport here would forward the stale request into the
+      // SDK's session validation, which 400-loops with "Server not initialized".
+      if (sessionId) {
+        const entry = sessions.get(sessionId);
+        if (!entry) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null }));
+          return;
+        }
+        // resume an existing session via its transport
         entry.lastActivity = Date.now();
         await entry.transport.handleRequest(req, res);
         return;
