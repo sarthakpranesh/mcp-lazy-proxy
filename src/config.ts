@@ -49,8 +49,21 @@ export function loadConfig(path: string): ProxyConfig {
   return { mcpServers: servers as Record<string, BackendConfig> };
 }
 
-// read and parse a JSON file into a plain object.
+// substitute ${VAR} references in the config text with values from process.env
+// so secrets can stay out of the mounted file (e.g. ${GITHUB_TOKEN}).
+function substituteEnv(text: string): string {
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
+    const value = process.env[name];
+    if (value === undefined) {
+      throw new Error(`environment variable "${name}" referenced in config is not set`);
+    }
+    // raw substitution so it works inside JSON strings, e.g. "Bearer ${TOKEN}"
+    return value;
+  });
+}
+
+// read, env-substitute, and parse a JSON file into a plain object.
 function readJson(path: string): Record<string, unknown> {
   const text = readFileSync(path, "utf8");
-  return JSON.parse(text);
+  return JSON.parse(substituteEnv(text));
 }

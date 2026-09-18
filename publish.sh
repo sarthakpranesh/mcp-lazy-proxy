@@ -27,7 +27,20 @@ version="${version:-$default}"
 #    npm version fails if the version is unchanged or the tag already exists.
 npm version "$version"
 
-# 5. Publish, then push the tag to GitHub.
+# 5. Publish to npm, then push the tag to GitHub.
 npm publish
 git push origin "v$version"
-gum style --foreground 2 "Published @sarthakpranesh/mcp-lazy-proxy@$version"
+gum style --foreground 2 "Published @sarthakpranesh/mcp-lazy-proxy@$version to npm and github"
+
+# 6. Log in to Docker Hub (interactive if no cached credentials), then build,
+#    tag (version + latest), and push the Docker image.
+docker login
+image="sarthakpranesh/mcp-lazy-proxy"
+gum style --foreground 6 "Building Docker image $image:$version ..."
+docker build \
+  -t "$image:$version" \
+  -t "$image:latest" \
+  .
+docker push "$image:$version"
+docker push "$image:latest"
+gum style --foreground 2 "Pushed Docker images $image:$version and $image:latest to Docker Hub"

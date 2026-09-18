@@ -1,0 +1,11 @@
+services:
+  mcp-lazy-proxy:
+    image: sarthakpranesh/mcp-lazy-proxy
+    ports:
+      - "3000:3000"
+    environment:
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./mcp.json:/app/mcp.json:ro
+    restart: unless-stopped

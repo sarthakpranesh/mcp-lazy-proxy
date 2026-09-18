@@ -34,21 +34,23 @@ Other lazy MCP proxies are all-or-nothing: they either keep every backend lazy o
 
 ## Quick start
 
-**Requirements:** Node.js 18+. Install and build:
+The proxy runs in one of two modes:
 
-```bash
-npm install
-npm run build
-```
+| Mode | How it runs | Traffic flow |
+| ---- | ----------- | ------------ |
+| **Stdio (local)** | Spawned as a subprocess by your MCP client (default). | Proxy talks to backends directly from your machine. **No network server is started and no remote proxy call is made** — it all happens in-process over stdio, local to your client. Best for a single machine. |
+| **Self-hosted HTTP (shared)** | Runs as a long-lived HTTP server (e.g. in Docker) on one host. | The proxy is a **central gate for all MCP calls** for every machine/agent — each client talks to the proxy over HTTP with a bearer token, and the proxy fans out to backends on its own host. Best for a team sharing one config. |
 
-Create a config file pointing at your MCP servers. See [Configuration](#configuration) for the full shape.
+In both modes the model sees the same two meta-tools (`get_mcp_tools`, `call_mcp_tool`); only the transport differs.
+
+Start with a config file pointing at your MCP servers. See [Configuration](#configuration) for the full shape.
 
 ```json
 {
   "mcpServers": {
     "github": {
       "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer <TOKEN>" },
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
       "instruction": "GitHub: issues, pull requests, code search. Use for anything repo-related."
     },
     "local-tool": {
@@ -61,7 +63,9 @@ Create a config file pointing at your MCP servers. See [Configuration](#configur
 }
 ```
 
-Point your MCP client at it as a stdio server. For example, in an MCP client config:
+### Option A — Stdio (local, default)
+
+Point your MCP client at it as a stdio server. No network server is started and no remote call is made — the proxy runs as a subprocess on the same machine as your client. For example, in an MCP client config:
 
 ```json
 {
@@ -74,9 +78,66 @@ Point your MCP client at it as a stdio server. For example, in an MCP client con
 }
 ```
 
+### Option B — Self-hosted HTTP (shared)
+
+Run the proxy as a shared, long-lived HTTP server (e.g. in Docker) that many clients connect to over the network. No web UI — clients reach the same two meta-tools (`get_mcp_tools`, `call_mcp_tool`) over MCP Streamable HTTP at `POST /mcp`. The proxy becomes the **single central gate**: every MCP call from every user machine/agent flows through it, and it fans out to backends on its own host.
+
+1. Create `.env`** with the shared bearer token and any backend secrets. Start from the example:
+```dotenv
+# shared token every client must send, for auth
+MCP_AUTH_TOKEN=change-me-to-a-long-random-string
+
+# MCP server tokens used by backends in the proxy
+# referenced by mcp.json
+GITHUB_TOKEN=ghp_xxxx                   
+```
+
+> Generate a strong token, e.g. `openssl rand -hex 32`.
+
+2. Define `docker-compose.yml` to build and run the proxy container, exposing `3000`, mounting `mcp.json` read-only, and passing the env vars through:
+
+```yaml
+services:
+  mcp-lazy-proxy:
+    image: sarthakpranesh/mcp-lazy-proxy
+    ports:
+      - "3000:3000"
+    environment:
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./mcp.json:/app/mcp.json:ro
+    restart: unless-stopped
+```
+
+3. Start it
+```bash
+docker compose up -d
+```
+
+4. Each machine connects with a single entry in its MCP client config:
+```json
+{
+  "mcpServers": {
+    "lazy-proxy": {
+      "type": "http",
+      "url": "http://<host>:3000/mcp",
+      "headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
+    }
+  }
+}
+```
+
+Notes:
+- **Local stdio backends now run on the proxy host, not the client.** Backends defined with `command` (plus any local files they need) must exist and be reachable inside the container. Remote (`url`) backends behave the same as in stdio mode.
+- **Auth is mandatory.** In HTTP mode the proxy refuses to start unless `MCP_AUTH_TOKEN` is set. Every request to `/mcp` must carry `Authorization: Bearer <token>` or it is rejected with `401`.
+- **Secrets stay out of the mounted config.** `mcp.json` can reference environment variables with `${VAR}` (e.g. `"Authorization": "Bearer ${GITHUB_TOKEN}"`) and they are substituted from `process.env` at load time.
+- **Config** still comes from `--config` (default `/app/mcp.json`, matching the container mount). The CLI flags are: `--transport http` (stdio is the default), `--port <n>` (default `3000`), `--host <addr>` (default `0.0.0.0`).
+**Rotating the bearer token:** generate a new value, set it in `.env` as `MCP_AUTH_TOKEN`, then `docker compose up -d` to recreate the container. Existing clients must be updated with the new token — old tokens are rejected immediately because each request is checked against the current value.
+
 ## Configuration
 
-The proxy takes a single JSON config file via `--config <path>`. It must have an `mcpServers` object; each entry is a backend with either a `url` (remote) or a `command` (local).
+The proxy takes a single JSON config file via `--config <path>`. It must have an `mcpServers` object; each entry is a backend with either a `url` (remote) or a `command` (local). Any `${VAR}` reference inside the file is substituted from `process.env` at load time, so secrets can live in environment variables instead of the mounted file.
 
 ### Backend reference
 
