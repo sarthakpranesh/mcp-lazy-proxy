@@ -21,7 +21,7 @@ RUN yarn install --frozen-lockfile --production=true \
 COPY --from=build /app/dist ./dist
 
 # run as a non-root user
-RUN useradd --create-home --uid 1000 proxyuser
+RUN useradd --create-home --uid 10001 proxyuser
 USER proxyuser
 
 EXPOSE 3000
