@@ -1,4 +1,5 @@
 import { createServer as createNodeHttpServer, Server as NodeHttpServer } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   StreamableHTTPServerTransport,
@@ -62,7 +63,21 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
     await entry.server.close().catch(() => {});
   };
 
+  // log each request and its resulting status once the response is finished.
+  const logRequest = (req: IncomingMessage, res: ServerResponse, label: string) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const at = new Date().toISOString();
+    const onFinish = () => {
+      res.removeListener("finish", onFinish);
+      console.log(
+        `[http] ${at} ${req.method} ${req.url} ${res.statusCode} ${sessionId ? `session=${sessionId}` : ""} ${label}`.trim(),
+      );
+    };
+    res.on("finish", onFinish);
+  };
+
   const nodeServer = createNodeHttpServer(async (req, res) => {
+    logRequest(req, res, "");
     // health probe: always allowed, no auth, so container HEALTHCHECK can probe.
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
