@@ -95,8 +95,9 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
       }
     }
 
-    // path gate: the MCP endpoint is POST /mcp; everything else is not found.
-    if (req.method === "POST" && req.url === "/mcp") {
+    // path gate: the MCP endpoint is /mcp (POST initialize + messages, GET for
+    // the SSE stream, DELETE to close). anything else is not found.
+    if (req.url === "/mcp") {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
       // a request carrying a session id for a session we don't know about
@@ -111,9 +112,17 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
           res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null }));
           return;
         }
-        // resume an existing session via its transport
+        // resume an existing session via its transport (POST message, GET SSE stream, DELETE close)
         entry.lastActivity = Date.now();
         await entry.transport.handleRequest(req, res);
+        return;
+      }
+
+      // a GET/DELETE without a session id has no target session; the standalone
+      // transport isn't used here, so nothing to open or close.
+      if (req.method !== "POST") {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
         return;
       }
 
