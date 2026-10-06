@@ -32,15 +32,25 @@ npm publish
 git push origin "v$version"
 gum style --foreground 2 "Published @sarthakpranesh/mcp-lazy-proxy@$version to npm and github"
 
-# 6. Log in to Docker Hub (interactive if no cached credentials), then build,
-#    tag (version + latest), and push the Docker image.
+# 6. Log in to Docker Hub (interactive if no cached credentials), then build a
+#    multi-arch image and push it. buildx emits a single manifest listing all
+#    platforms, so amd64 and arm64 hosts can both pull a native image.
 docker login
 image="sarthakpranesh/mcp-lazy-proxy"
-gum style --foreground 6 "Building Docker image $image:$version ..."
-docker build \
+builder="mcp-lazy-proxy-builder"
+
+# create (or reuse) a buildx builder with a docker-container driver, which is
+# required to build images for platforms other than the host's own.
+if ! docker buildx inspect "$builder" >/dev/null 2>&1; then
+  docker buildx create --name "$builder" --driver docker-container
+fi
+docker buildx use "$builder"
+
+gum style --foreground 6 "Building multi-arch Docker image $image:$version (linux/amd64, linux/arm64) ..."
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
   -t "$image:$version" \
   -t "$image:latest" \
+  --push \
   .
-docker push "$image:$version"
-docker push "$image:latest"
-gum style --foreground 2 "Pushed Docker images $image:$version and $image:latest to Docker Hub"
+gum style --foreground 2 "Pushed multi-arch Docker images $image:$version and $image:latest to Docker Hub"
