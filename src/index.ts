@@ -110,19 +110,22 @@ async function main(): Promise<void> {
         {
           name: "call_mcp_tool",
           description:
-            "Invoke a tool on a configured MCP backend. Use the tool name and arguments returned by get_mcp_tools.",
+            "Invoke a tool on a configured MCP backend. Set toolName to the tool name returned by get_mcp_tools and pass its arguments.",
           inputSchema: {
             type: "object",
             properties: {
               mcp: { type: "string", description: "Name of the MCP backend from the proxy config." },
-              tool: { type: "string", description: "Tool name as returned by get_mcp_tools." },
+              // NOTE: the backend tool name is exposed as "toolName", not "tool".
+              // some clients (e.g. n8n's agent) reserve "tool" for their own use and
+              // strip it from arguments before forwarding, which silently empties it.
+              toolName: { type: "string", description: "Tool name as returned by get_mcp_tools." },
               arguments: {
                 type: "object",
                 description: "Arguments per the tool's input schema.",
                 additionalProperties: true,
               },
             },
-            required: ["mcp", "tool", "arguments"],
+            required: ["mcp", "toolName", "arguments"],
           },
         },
       ],
@@ -159,7 +162,9 @@ async function main(): Promise<void> {
       // call_mcp_tool: forward a tool invocation to a backend.
       if (name === "call_mcp_tool") {
         const mcp = String(args?.mcp ?? "");
-        const tool = String(args?.tool ?? "");
+        // accept toolName (preferred) or the legacy tool key, since some clients
+        // drop a nested "tool" property from arguments before forwarding.
+        const tool = String(args?.toolName ?? args?.tool ?? "");
         const toolArgs = (args?.arguments ?? {}) as Record<string, unknown>;
         const handle = await backends.get(mcp);
         const result = await handle.callTool(tool, toolArgs);
