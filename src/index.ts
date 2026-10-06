@@ -131,6 +131,9 @@ async function main(): Promise<void> {
     // handle calls to the two meta-tools, dispatching to the right backend.
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    // debug: log the raw inbound tool name and arguments. stderr is used because
+    // stdout is the protocol channel in stdio mode; logging there would corrupt it.
+    console.error(`[mcp-proxy] CallTool name=${JSON.stringify(name)} args=${JSON.stringify(args)}`);
     try {
       // get_mcp_tools: load a backend's tool schemas (with optional filter/limit).
       if (name === "get_mcp_tools") {
