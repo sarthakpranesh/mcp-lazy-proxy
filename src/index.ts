@@ -74,6 +74,13 @@ async function main(): Promise<void> {
   // favor of `McpServer`) because tool schemas are discovered at runtime and
   // forwarded by name via call_mcp_tool — the documented advanced use case.
   const buildServer = () => {
+    // one bullet per configured backend, shared by the server `instructions` and
+    // the get_mcp_tools description so the two can never drift apart.
+    const backendList = backends
+      .list()
+      .map((b) => `- ${b.name}: ${b.instruction ?? "no description"}`)
+      .join("\n");
+
     const server = new Server(
       { name: packageJson.name, version: packageJson.version },
       {
@@ -81,9 +88,7 @@ async function main(): Promise<void> {
         instructions: [
           "Lazy MCP proxy. Backend MCP servers are not loaded into context by default; discover them on demand.",
           "Available backends:",
-          ...backends
-            .list()
-            .map((b) => `- ${b.name}: ${b.instruction ?? "no description"}`),
+          backendList,
           "Workflow: call get_mcp_tools to load a backend's tool schemas, then call_mcp_tool to invoke one.",
         ].join("\n"),
       },
@@ -96,7 +101,12 @@ async function main(): Promise<void> {
         {
           name: "get_mcp_tools",
           description:
-            "Discover the tools exposed by a configured MCP backend. Returns the backend's instruction (if any) plus a filtered list of tool names, descriptions, and input schemas. Call this before call_mcp_tool to learn what a backend can do.",
+            "Discover the tools exposed by a configured MCP backend. Returns the backend's instruction (if any) plus a filtered list of tool names, descriptions, and input schemas. Call this before call_mcp_tool to learn what a backend can do.\n" +
+            // also embedded here because tool descriptions are always injected
+            // into the model context, unlike the server `instructions` which
+            // some clients (e.g. n8n) drop.
+            "Available backends:\n" +
+            backendList,
           inputSchema: {
             type: "object",
             properties: {
