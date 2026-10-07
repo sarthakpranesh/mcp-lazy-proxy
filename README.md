@@ -2,6 +2,8 @@
 
 Lazy MCP proxy for LLM clients. Instead of injecting every backend MCP server's tool schemas into the model context, it exposes just two meta-tools — `get_mcp_tools` and `call_mcp_tool` — that load and invoke backend servers on demand. The model sees a tiny, stable tool surface. Backends are connected lazily, their tool lists are cached, and idle connections are closed automatically.
 
+[![Listed on MCP Market](https://mcpmarket.com/badge/server/lazy-proxy-1.svg)](https://mcpmarket.com/server/lazy-proxy-1?utm_source=readme&utm_medium=badge)
+
 ## Why
 
 I run local models on a small mini PC — a KAMRUI Hyper H1 with an AMD Ryzen 7 6800H, 32 GB RAM, and 16 GB of shared UMA vRAM for the iGPU. It works surprisingly well, but context bloat is the one thing that keeps tripping me up the moment I plug in the MCPs I actually use every day.
