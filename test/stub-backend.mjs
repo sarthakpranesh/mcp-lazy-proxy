@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 const server = new Server(
   { name: "stub-backend", version: "0.0.1" },
-  { capabilities: { tools: {} } },
+  { capabilities: { tools: {} }, instructions: "stub backend instructions" },
 );
 
 // a 1x1 transparent PNG, enough to prove binary content survives the proxy.
@@ -37,6 +37,9 @@ server.setRequestHandler(ListToolsRequestSchema, async (req) => {
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  if (!TOOLS.some((t) => t.name === req.params.name)) {
+    return { content: [{ type: "text", text: `no such tool: ${req.params.name}` }], isError: true };
+  }
   if (req.params.name === "image") {
     return {
       content: [{ type: "image", data: PNG, mimeType: "image/png" }],
@@ -45,6 +48,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (req.params.name === "fail") {
     return { content: [{ type: "text", text: "boom" }], isError: true };
+  }
+  if (req.params.arguments?.bump && !TOOLS.some((t) => t.name === "extra")) {
+    // simulate a backend that hot-reloads its tool list
+    TOOLS.push({ name: "extra", description: "added at runtime", inputSchema: { type: "object" } });
+    server.sendToolListChanged();
   }
   return { content: [{ type: "text", text: JSON.stringify(req.params.arguments ?? {}) }] };
 });
