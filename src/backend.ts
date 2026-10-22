@@ -1,7 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ToolListChangedNotificationSchema,
+  type CallToolResult,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import type { BackendConfig } from "./config.js";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -9,6 +13,13 @@ import packageJson from "../package.json" with { type: "json" };
 // kept as the SDK's own Tool shape so discovery stays lossless (outputSchema,
 // title, annotations, icons, ... all pass through unchanged).
 export type BackendTool = Tool;
+
+// the eagerly-injected favorite schemas and the tool name -> owner map used to
+// route direct calls to the right backend.
+export interface FavoriteTools {
+  tools: BackendTool[];
+  owner: Map<string, { backend: string; realToolName: string }>;
+}
 
 // opaque handle to a connected backend for the tool handlers.
 export interface BackendHandle {
@@ -26,12 +37,20 @@ export interface BackendSummary {
 
 // the idle timeout for a backend connection
 const IDLE_TIMEOUT_MS = 5 * 60_000;
+// hard cap on tools/list pages per discovery. guards against a misbehaving
+// backend that keeps returning a cursor: without it, the loop never ends.
+const MAX_TOOL_PAGES = 10;
 
 // lazily connects to backends, caches their tool lists, and closes on idle.
 export class BackendManager {
   private readonly clients = new Map<string, Client>();
   private readonly tools = new Map<string, BackendTool[]>();
   private readonly idleTimers = new Map<string, NodeJS.Timeout>();
+
+  // eagerly-injected favorite schemas plus the map that routes direct calls.
+  // rebuilt lazily after a favorite reports a tools/list_changed.
+  private favoritesCache?: FavoriteTools;
+  private favoritesStale = false;
 
   constructor(private readonly configs: Record<string, BackendConfig>) {}
 
@@ -50,10 +69,21 @@ export class BackendManager {
       .map(([name]) => name);
   }
 
+  // return the cached favorite schemas, rebuilding them only when a favorite
+  // reported a change. one promise means callers never load them twice.
+  async favoriteTools(): Promise<FavoriteTools> {
+    if (this.favoritesCache && !this.favoritesStale) return this.favoritesCache;
+    // clear before awaiting so a change landing mid-rebuild leaves it dirty.
+    this.favoritesStale = false;
+    const fresh = await this.loadFavorites();
+    this.favoritesCache = fresh;
+    return fresh;
+  }
+
   // eagerly connect to the favorite backends and collect their tool schemas,
   // along with a map of each tool name to its owning backend.
   // a backend that fails to load is skipped so one bad favorite can't crash the proxy.
-  async loadFavorites(): Promise<{ tools: BackendTool[]; owner: Map<string, { backend: string; realToolName: string }> }> {
+  private async loadFavorites(): Promise<FavoriteTools> {
     const names = this.favorites();
     const sets = await Promise.all(
       names.map(async (n) => {
@@ -107,6 +137,15 @@ export class BackendManager {
 
     // create a new client with the package name and version
     const client = new Client({ name: packageJson.name, version: packageJson.version });
+
+    // drop the cached tool list when the backend says it changed, so the next
+    // discovery re-fetches instead of serving stale schemas. this is what makes
+    // long-lived connections notice backend restarts/updates.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      this.tools.delete(name);
+      if (this.configs[name]?.favorite) this.favoritesStale = true;
+    });
+
     await client.connect(transport);
 
     // cache the client
@@ -134,15 +173,10 @@ export class BackendManager {
 
   // list a backend's tools, caching them and applying optional query/limit filters.
   private async listTools(name: string, query?: string, limit?: number): Promise<BackendTool[]> {
-    const client = await this.connect(name, this.configs[name]);
-
     // get the cached tools for the backend
     let tools = this.tools.get(name);
     if (!tools) {
-      const res = await client.listTools();
-      // cache the backend's tools as-is so nothing (title, annotations,
-      // outputSchema, ...) is dropped on the way to the model.
-      tools = res.tools ?? [];
+      tools = await this.fetchAllTools(name, this.configs[name]);
       this.tools.set(name, tools);
     }
 
@@ -158,6 +192,25 @@ export class BackendManager {
       filtered = filtered.slice(0, limit);
     }
     return filtered;
+  }
+
+  // walk tools/list pages until the backend stops returning a cursor.
+  private async fetchAllTools(name: string, cfg: BackendConfig): Promise<BackendTool[]> {
+    const client = await this.connect(name, cfg);
+    const tools: BackendTool[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    for (let pages = 0; pages < MAX_TOOL_PAGES; pages++) {
+      const res = await client.listTools(cursor ? { cursor } : undefined);
+      tools.push(...(res.tools ?? []));
+      cursor = res.nextCursor;
+      if (!cursor || seen.has(cursor)) break;
+      seen.add(cursor);
+    }
+    if (cursor) {
+      console.error(`[mcp-proxy] ${name}: stopped after ${MAX_TOOL_PAGES} pages; tool list may be incomplete`);
+    }
+    return tools;
   }
 
   // forward a tool call to a backend and return its full result, preserving

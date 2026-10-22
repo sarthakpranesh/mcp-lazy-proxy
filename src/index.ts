@@ -58,10 +58,8 @@ async function main(): Promise<void> {
   const config = loadConfig(configPath);
   const backends = new BackendManager(config.mcpServers);
 
-  // eagerly load the tool schemas of any favorite backends so they are injected
-  // into context up front (remaining backends stay lazy). also returns a map of
-  // each eager tool name to its owning backend so direct calls route correctly.
-  const { tools: favoriteTools, owner: favoriteOwner } = await backends.loadFavorites();
+  // precache the favorite backend list
+  await backends.favoriteTools();
 
   // shared shutdown: close all backend connections.
   const shutdown = async () => {
@@ -100,53 +98,56 @@ async function main(): Promise<void> {
     );
 
     // advertise the meta-tools plus any eagerly-loaded favorite backend schemas.
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        ...favoriteTools,
-        {
-          name: "get_mcp_tools",
-          description:
-            "Discover the tools exposed by a configured MCP backend. Returns the backend's instruction (if any) plus a filtered list of tool names, descriptions, and input schemas. Call this before call_mcp_tool to learn what a backend can do.\n" +
-            // also embedded here because tool descriptions are always injected
-            // into the model context, unlike the server `instructions` which
-            // some clients (e.g. n8n) drop.
-            "Available backends:\n" +
-            backendList +
-            "\n" +
-            workflow,
-          inputSchema: {
-            type: "object",
-            properties: {
-              mcp: { type: "string", description: "Name of the MCP backend from the proxy config." },
-              query: { type: "string", description: "Optional substring filter on tool name/description." },
-              limit: { type: "number", description: "Optional cap on results (default 50)." },
-            },
-            required: ["mcp"],
-          },
-        },
-        {
-          name: "call_mcp_tool",
-          description:
-            "Invoke a tool on a configured MCP backend. Set toolName to the tool name returned by get_mcp_tools and pass its arguments.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              mcp: { type: "string", description: "Name of the MCP backend from the proxy config." },
-              // NOTE: the backend tool name is exposed as "toolName", not "tool".
-              // some clients (e.g. n8n's agent) reserve "tool" for their own use and
-              // strip it from arguments before forwarding, which silently empties it.
-              toolName: { type: "string", description: "Tool name as returned by get_mcp_tools." },
-              arguments: {
-                type: "object",
-                description: "Arguments per the tool's input schema.",
-                additionalProperties: true,
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const { tools: favoriteTools } = await backends.favoriteTools();
+      return {
+        tools: [
+          ...favoriteTools,
+          {
+            name: "get_mcp_tools",
+            description:
+              "Discover the tools exposed by a configured MCP backend. Returns the backend's instruction (if any) plus a filtered list of tool names, descriptions, and input schemas. Call this before call_mcp_tool to learn what a backend can do.\n" +
+              // also embedded here because tool descriptions are always injected
+              // into the model context, unlike the server `instructions` which
+              // some clients (e.g. n8n) drop.
+              "Available backends:\n" +
+              backendList +
+              "\n" +
+              workflow,
+            inputSchema: {
+              type: "object",
+              properties: {
+                mcp: { type: "string", description: "Name of the MCP backend from the proxy config." },
+                query: { type: "string", description: "Optional substring filter on tool name/description." },
+                limit: { type: "number", description: "Optional cap on results (default 50)." },
               },
+              required: ["mcp"],
             },
-            required: ["mcp", "toolName", "arguments"],
           },
-        },
-      ],
-    }));
+          {
+            name: "call_mcp_tool",
+            description:
+              "Invoke a tool on a configured MCP backend. Set toolName to the tool name returned by get_mcp_tools and pass its arguments.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                mcp: { type: "string", description: "Name of the MCP backend from the proxy config." },
+                // NOTE: the backend tool name is exposed as "toolName", not "tool".
+                // some clients (e.g. n8n's agent) reserve "tool" for their own use and
+                // strip it from arguments before forwarding, which silently empties it.
+                toolName: { type: "string", description: "Tool name as returned by get_mcp_tools." },
+                arguments: {
+                  type: "object",
+                  description: "Arguments per the tool's input schema.",
+                  additionalProperties: true,
+                },
+              },
+              required: ["mcp", "toolName", "arguments"],
+            },
+          },
+        ],
+      };
+    });
 
     // handle calls to the two meta-tools, dispatching to the right backend.
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -189,6 +190,7 @@ async function main(): Promise<void> {
       }
 
       // direct call to an injected favorite tool: route to its owning backend.
+      const { owner: favoriteOwner } = await backends.favoriteTools();
       const ownerObj = favoriteOwner.get(name);
       if (ownerObj) {
         const handle = await backends.get(ownerObj.backend);

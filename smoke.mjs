@@ -186,6 +186,25 @@ async function runHttpSmoke() {
       await client.close();
     });
 
+    await check("get_mcp_tools merges backend pages before applying limit", async () => {
+      const client = new Client({ name: "smoke-http", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${PORT}/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } },
+      );
+      await client.connect(transport);
+      const page = async (args) =>
+        JSON.parse((await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stub", ...args } })).content[0].text);
+      // stub has 5 tools over 3 backend pages. a limit above the page size must
+      // return all 5, proving the proxy walked the cursor instead of dropping pages.
+      const all = await page({ limit: 10 });
+      console.log("  merged tools:", all.tools.length);
+      if (all.tools.length !== 5) throw new Error(`expected 5 tools, got ${all.tools.length}`);
+      const capped = await page({ limit: 2 });
+      if (capped.tools.length !== 2) throw new Error(`expected 2 tools, got ${capped.tools.length}`);
+      await client.close();
+    });
+
     await check("http mode call_mcp_tool dispatches to stub backend", async () => {
       const client = new Client({ name: "smoke-http", version: "0.0.1" });
       const transport = new StreamableHTTPClientTransport(

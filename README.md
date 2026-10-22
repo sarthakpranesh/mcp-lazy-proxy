@@ -166,6 +166,8 @@ Discover what a backend can do before calling it. Returns the backend's instruct
 | `query`  | string | Optional substring filter on tool name/description.               |
 | `limit`  | number | Optional cap on results (default 50).                             |
 
+Backend `tools/list` pagination is merged before `limit` is applied, so a paged backend loses nothing.
+
 ### `call_mcp_tool`
 
 Invoke a tool on a backend. Use the tool name and arguments returned by `get_mcp_tools`.
