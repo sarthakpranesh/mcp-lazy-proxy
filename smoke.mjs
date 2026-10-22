@@ -196,15 +196,68 @@ async function runHttpSmoke() {
       const payload = { hello: "world", n: 42 };
       const r = await client.callTool({
         name: "call_mcp_tool",
-        arguments: { mcp: "stub", tool: "echo", arguments: payload },
+        arguments: { mcp: "stub", toolName: "echo", arguments: payload },
       });
       const text = r.content[0].text;
       console.log("  echoed:", text.replace(/\n/g, " "));
-      // the outer content array JSON-stringifies the stub's payload, so the
-      // inner quotes are escaped (\"hello\":\"world\"). assert on the unquoted
-      // key/values to confirm the arguments round-tripped end to end.
+      // the proxy forwards the backend's result verbatim, so the stub's text
+      // block arrives unescaped.
       if (!text.includes("hello") || !text.includes("world") || !text.includes("42")) {
         throw new Error("echo did not round-trip the payload");
+      }
+      await client.close();
+    });
+
+    await check("call_mcp_tool preserves image blocks and isError end-to-end", async () => {
+      const client = new Client({ name: "smoke-http", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${PORT}/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } },
+      );
+      await client.connect(transport);
+
+      const img = await client.callTool({
+        name: "call_mcp_tool",
+        arguments: { mcp: "stub", toolName: "image", arguments: {} },
+      });
+      const block = img.content[0];
+      console.log("  image block type:", block.type);
+      if (block.type !== "image" || block.mimeType !== "image/png") {
+        throw new Error(`expected an image/png block, got ${JSON.stringify(block).slice(0, 120)}`);
+      }
+      if (img.structuredContent?.ok !== true) {
+        throw new Error("structuredContent was dropped by the proxy");
+      }
+
+      const failed = await client.callTool({
+        name: "call_mcp_tool",
+        arguments: { mcp: "stub", toolName: "fail", arguments: {} },
+      });
+      console.log("  failed result isError:", failed.isError);
+      if (failed.isError !== true) {
+        throw new Error("backend isError flag was dropped by the proxy");
+      }
+      if (failed.content[0].text !== "boom") {
+        throw new Error("backend error text was not passed through");
+      }
+      await client.close();
+    });
+
+    await check("get_mcp_tools preserves outputSchema, title, and annotations", async () => {
+      const client = new Client({ name: "smoke-http", version: "0.0.1" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${PORT}/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } },
+      );
+      await client.connect(transport);
+      const r = await client.callTool({
+        name: "get_mcp_tools",
+        arguments: { mcp: "stub" },
+      });
+      const { tools } = JSON.parse(r.content[0].text);
+      const image = tools.find((t) => t.name === "image");
+      if (!image?.outputSchema || image.title !== "Image" || !image.annotations?.readOnlyHint) {
+        throw new Error(`tool metadata dropped: ${JSON.stringify(image)}`);
       }
       await client.close();
     });

@@ -43,7 +43,7 @@ async function bench(mode, cfg) {
     const name = parsed.tools[0].name;
     await client.callTool({
       name: "call_mcp_tool",
-      arguments: { mcp: CHOSEN, tool: name, arguments: {} },
+      arguments: { mcp: CHOSEN, toolName: name, arguments: {} },
     });
   } else {
     await client.callTool({ name: TOOL, arguments: {} });

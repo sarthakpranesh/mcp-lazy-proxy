@@ -81,6 +81,11 @@ async function main(): Promise<void> {
       .map((b) => `- ${b.name}: ${b.instruction ?? "no description"}`)
       .join("\n");
 
+    // the usage guidance, likewise shared between instructions and the tool
+    // description.
+    const workflow =
+      "Workflow: call get_mcp_tools to load a backend's tool schemas, then call_mcp_tool to invoke one.";
+
     const server = new Server(
       { name: packageJson.name, version: packageJson.version },
       {
@@ -89,7 +94,7 @@ async function main(): Promise<void> {
           "Lazy MCP proxy. Backend MCP servers are not loaded into context by default; discover them on demand.",
           "Available backends:",
           backendList,
-          "Workflow: call get_mcp_tools to load a backend's tool schemas, then call_mcp_tool to invoke one.",
+          workflow,
         ].join("\n"),
       },
     );
@@ -106,7 +111,9 @@ async function main(): Promise<void> {
             // into the model context, unlike the server `instructions` which
             // some clients (e.g. n8n) drop.
             "Available backends:\n" +
-            backendList,
+            backendList +
+            "\n" +
+            workflow,
           inputSchema: {
             type: "object",
             properties: {
@@ -172,20 +179,13 @@ async function main(): Promise<void> {
       // call_mcp_tool: forward a tool invocation to a backend.
       if (name === "call_mcp_tool") {
         const mcp = String(args?.mcp ?? "");
-        // accept toolName (preferred) or the legacy tool key, since some clients
-        // drop a nested "tool" property from arguments before forwarding.
-        const tool = String(args?.toolName ?? args?.tool ?? "");
+        const tool = String(args?.toolName ?? "");
         const toolArgs = (args?.arguments ?? {}) as Record<string, unknown>;
         const handle = await backends.get(mcp);
         const result = await handle.callTool(tool, toolArgs);
-        return {
-          content: [
-            {
-              type: "text",
-              text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
-            },
-          ],
-        };
+        // return the backend's result untouched so content blocks,
+        // structuredContent, and isError reach the client intact.
+        return result;
       }
 
       // direct call to an injected favorite tool: route to its owning backend.
@@ -193,14 +193,8 @@ async function main(): Promise<void> {
       if (ownerObj) {
         const handle = await backends.get(ownerObj.backend);
         const result = await handle.callTool(ownerObj.realToolName, (args ?? {}) as Record<string, unknown>);
-        return {
-          content: [
-            {
-              type: "text",
-              text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
-            },
-          ],
-        };
+        // same passthrough as call_mcp_tool: no reshaping of the result.
+        return result;
       }
 
       return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true };

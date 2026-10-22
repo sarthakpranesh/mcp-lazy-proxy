@@ -25,9 +25,9 @@ Other lazy MCP proxies are all-or-nothing: they either keep every backend lazy o
 
 ## Features
 
-- Only two tool schemas injected into the model context, no matter how many backends you configure
+- Two meta-tool schemas injected by default, plus the schemas of any `favorite` backends
 - `get_mcp_tools` discovers a backend's tools (with optional name/description filter and result limit)
-- `call_mcp_tool` forwards a tool invocation to any backend
+- `call_mcp_tool` forwards a tool invocation to any backend and returns its result unchanged
 - Backends connect lazily on first use and close after 5 minutes idle
 - Supports both remote (HTTP/Streamable) and local (stdio subprocess) MCP servers
 - Per-backend `instruction` lets you tell the model what each MCP is for
@@ -158,7 +158,7 @@ The proxy advertises two meta-tools to the model.
 
 ### `get_mcp_tools`
 
-Discover what a backend can do before calling it. Returns the backend's instruction plus a filtered list of tool names, descriptions, and input schemas.
+Discover what a backend can do before calling it. Returns the backend's instruction plus a filtered list of tool names, descriptions, input and output schemas, titles, and annotations.
 
 | Argument | Type   | Description                                                       |
 | -------- | ------ | ----------------------------------------------------------------- |
@@ -173,8 +173,10 @@ Invoke a tool on a backend. Use the tool name and arguments returned by `get_mcp
 | Argument    | Type   | Description                                        |
 | ----------- | ------ | -------------------------------------------------- |
 | `mcp`       | string | Name of the MCP backend from the proxy config.     |
-| `tool`      | string | Tool name as returned by `get_mcp_tools`.          |
+| `toolName`  | string | Tool name as returned by `get_mcp_tools`. |
 | `arguments` | object | Arguments per the tool's input schema.             |
+
+The backend's result is returned verbatim: all content blocks, `structuredContent`, and `isError` pass through unchanged.
 
 ### Workflow
 

@@ -1,21 +1,20 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { BackendConfig } from "./config.js";
 import packageJson from "../package.json" with { type: "json" };
 
 // a single tool exposed by a backend, as surfaced to the model.
-export interface BackendTool {
-  name: string;
-  description?: string;
-  inputSchema?: Record<string, unknown>;
-}
+// kept as the SDK's own Tool shape so discovery stays lossless (outputSchema,
+// title, annotations, icons, ... all pass through unchanged).
+export type BackendTool = Tool;
 
 // opaque handle to a connected backend for the tool handlers.
 export interface BackendHandle {
   instruction?: string;
   listTools(query?: string, limit?: number): Promise<BackendTool[]>;
-  callTool(tool: string, args: Record<string, unknown>): Promise<unknown>;
+  callTool(tool: string, args: Record<string, unknown>): Promise<CallToolResult>;
   close(): Promise<void>;
 }
 
@@ -141,11 +140,9 @@ export class BackendManager {
     let tools = this.tools.get(name);
     if (!tools) {
       const res = await client.listTools();
-      tools = (res.tools ?? []).map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema as Record<string, unknown> | undefined,
-      }));
+      // cache the backend's tools as-is so nothing (title, annotations,
+      // outputSchema, ...) is dropped on the way to the model.
+      tools = res.tools ?? [];
       this.tools.set(name, tools);
     }
 
@@ -163,15 +160,15 @@ export class BackendManager {
     return filtered;
   }
 
-  // forward a tool call to a backend and return its raw result content.
+  // forward a tool call to a backend and return its full result, preserving
+  // content blocks, structuredContent, and isError for the client.
   private async callTool(
     name: string,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<unknown> {
+  ): Promise<CallToolResult> {
     const client = await this.connect(name, this.configs[name]);
-    const res = await client.callTool({ name: tool, arguments: args });
-    return res.content ?? res;
+    return (await client.callTool({ name: tool, arguments: args })) as CallToolResult;
   }
 
   // reset the idle-close timer for a backend on each use.
