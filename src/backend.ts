@@ -52,7 +52,13 @@ export class BackendManager {
   private favoritesCache?: FavoriteTools;
   private favoritesStale = false;
 
-  constructor(private readonly configs: Record<string, BackendConfig>) {}
+  // filesDir is handed to local backends in the env var they name in filesEnv
+  // (e.g. IMAGE_DIR for figma) so file-writing tools land where the proxy can
+  // serve them from /files/*. unset means no dir is injected at all.
+  constructor(
+    private readonly configs: Record<string, BackendConfig>,
+    private readonly filesDir?: string,
+  ) {}
 
   // return the catalog of configured backends (name + instruction).
   list(): BackendSummary[] {
@@ -163,11 +169,21 @@ export class BackendManager {
     }
 
     // build the transport for a local backend
-    const local = cfg as { command: string; args?: string[]; env?: Record<string, string> };
+    const local = cfg as {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      filesEnv?: string;
+    };
+
+    // point the backend at the shared files dir, but only when it opts in by
+    // naming the env var it reads (figma: IMAGE_DIR); explicit env still wins.
+    const filesEnv = this.filesDir && local.filesEnv ? { [local.filesEnv]: this.filesDir } : {};
+
     return new StdioClientTransport({
       command: local.command,
       args: local.args ?? [],
-      env: local.env,
+      env: { ...filesEnv, ...local.env },
     });
   }
 

@@ -13,6 +13,8 @@ export interface LocalBackendConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** opt in: env var that receives the shared files dir, e.g. "IMAGE_DIR". */
+  filesEnv?: string;
 }
 
 // a backend is either remote or local, plus optional metadata.

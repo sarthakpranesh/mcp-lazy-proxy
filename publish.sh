@@ -27,8 +27,15 @@ version="${version:-$default}"
 #    npm version fails if the version is unchanged or the tag already exists.
 npm version "$version"
 
-# 5. Publish to npm, then push the tag to GitHub.
-npm publish
+# 5. A version ending in "-<alphanumeric>" is a prerelease: use its channel as
+#    the npm dist-tag (0.1.14-rc1 -> rc) and keep Docker's ":latest" stable.
+prerelease=""
+publish_args=()
+if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-([A-Za-z]+) ]]; then
+  prerelease=1
+  publish_args=(--tag "${BASH_REMATCH[1]}")
+fi
+npm publish "${publish_args[@]}"
 git push origin "v$version"
 gum style --foreground 2 "Published @sarthakpranesh/mcp-lazy-proxy@$version to npm and github"
 
@@ -47,10 +54,15 @@ fi
 docker buildx use "$builder"
 
 gum style --foreground 6 "Building multi-arch Docker image $image:$version (linux/amd64, linux/arm64) ..."
+
+# only a stable release moves ":latest".
+docker_tags=(-t "$image:$version")
+if [[ -z "$prerelease" ]]; then
+  docker_tags+=(-t "$image:latest")
+fi
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t "$image:$version" \
-  -t "$image:latest" \
+  "${docker_tags[@]}" \
   --push \
   .
-gum style --foreground 2 "Pushed multi-arch Docker images $image:$version and $image:latest to Docker Hub"
+gum style --foreground 2 "Pushed multi-arch Docker image $image:$version${prerelease:+ (prerelease, :latest untouched)} to Docker Hub"

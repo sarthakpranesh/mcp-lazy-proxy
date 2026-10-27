@@ -1,6 +1,6 @@
 {
   "name": "@sarthakpranesh/mcp-lazy-proxy",
-  "version": "0.1.13",
+  "version": "0.1.15-rc6",
   "description": "Lazy MCP proxy: exposes get_mcp_tools / call_mcp_tool meta-tools that load backend MCP servers on demand, so only two tool schemas are injected into the model context.",
   "type": "module",
   "bin": {
@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {

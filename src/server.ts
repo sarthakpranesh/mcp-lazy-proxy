@@ -1,6 +1,7 @@
 import { createServer as createNodeHttpServer, Server as NodeHttpServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { serveFile } from "./files.js";
 import {
   StreamableHTTPServerTransport,
 } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -29,6 +30,8 @@ export interface HttpServerOptions {
   buildServer: () => McpServer;
   /** expected bearer token; when provided, requests without it return 401. */
   expectedToken?: string;
+  /** directory served at GET /files/*; unset when no backend opts into filesEnv. */
+  filesDir?: string;
   /** how long a session may sit idle before it is closed and evicted (ms). 0 disables. */
   sessionIdleTimeoutMs?: number;
   /** called on graceful shutdown to close backends. */
@@ -49,7 +52,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
   getPort: () => number;
   close: () => Promise<void>;
 }> {
-  const { buildServer, expectedToken, onShutdown } = opts;
+  const { buildServer, expectedToken, filesDir, onShutdown } = opts;
   const sessionIdleTimeoutMs = opts.sessionIdleTimeoutMs ?? 5 * 60_000; // 5 minutes
   const sessions = new Map<string, Session>();
 
@@ -93,6 +96,13 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
+    }
+
+    // files written by backends (figma screenshots, exports, ...) are
+    // downloadable over the same authenticated port the client already uses.
+    if (filesDir && req.method === "GET" && req.url?.startsWith("/files/")) {
+      await serveFile(filesDir, req, res);
+      return;
     }
 
     // path gate: the MCP endpoint is /mcp (POST initialize + messages, GET for

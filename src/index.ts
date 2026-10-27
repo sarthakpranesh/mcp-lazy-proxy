@@ -2,10 +2,13 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { homedir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { BackendManager } from "./backend.js";
 import { startHttpServer } from "./server.js";
+import { readFileWithin } from "./files.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const CONFIG_ARG = "--config";
@@ -13,6 +16,10 @@ const TRANSPORT_ARG = "--transport";
 const PORT_ARG = "--port";
 const HOST_ARG = "--host";
 const DEFAULT_CONFIG_PATH = "/app/mcp.json";
+
+// backend artifacts are screenshots and exports; 10 MB covers a phone screenshot
+// with room to spare while keeping one tool result from flooding a context window.
+const DEFAULT_INLINE_MAX_BYTES = 10 * 1024 * 1024;
 
 // expand a leading "~" to the user's home directory, since the proxy may be
 // spawned without a shell (e.g. by an MCP client) where "~" is not expanded.
@@ -52,11 +59,39 @@ function parseArgs(argv: string[]): CliArgs {
   return { configPath, transport, port, host };
 }
 
+// origin clients can actually reach for /files/*: a wildcard bind address is not
+// a hostname, so fall back to loopback.
+function publicHost(host: string): string {
+  return host === "0.0.0.0" || host === "::" || host === "" ? "127.0.0.1" : host;
+}
+
+// create the shared scratch dir that backends write into and /files/* serves.
+function prepareFilesDir(): string {
+  // tmp is writable by any user, so no image or volume setup is needed. 0700
+  // keeps backend artifacts private on multi-user hosts.
+  const dir = join(tmpdir(), "mcp-lazy-proxy-files");
+  // start from a clean slate: artifacts from a previous run must not linger, since
+  // every backend shares this one dir and nothing else prunes it.
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 async function main(): Promise<void> {
   // parse CLI, load config, and build the backend manager.
   const { configPath, transport, port, host } = parseArgs(process.argv.slice(2));
+
   const config = loadConfig(configPath);
-  const backends = new BackendManager(config.mcpServers);
+
+  // a files dir exists only when a backend opts in with filesEnv — that is the
+  // only way anything can write into it, so no opt-in means no dir and no
+  // get_mcp_file tool in either transport.
+  const hasFilesEnvBackend = Object.values(config.mcpServers).some(
+    (cfg) => "filesEnv" in cfg && Boolean(cfg.filesEnv),
+  );
+  const filesDir = hasFilesEnvBackend ? prepareFilesDir() : undefined;
+
+  const backends = new BackendManager(config.mcpServers, filesDir);
 
   // precache the favorite backend list
   await backends.favoriteTools();
@@ -65,6 +100,10 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     await backends.closeAll();
   };
+
+  // base for resource URIs; set once the http server is listening, so stdio keeps
+  // a file:// URI (there is no /files route there) and http points at the route.
+  let filesUrlBase: string | undefined;
 
   // build a fresh MCP server with the meta-tool handlers wired in.
   // a new instance is created per HTTP session (one transport per Server).
@@ -82,7 +121,10 @@ async function main(): Promise<void> {
     // the usage guidance, likewise shared between instructions and the tool
     // description.
     const workflow =
-      "Workflow: call get_mcp_tools to load a backend's tool schemas, then call_mcp_tool to invoke one.";
+      "Workflow: call get_mcp_tools to load a backend's tool schemas, then call_mcp_tool to invoke one." +
+      (filesDir
+        ? " A backend's files are only reachable through the proxy: fetch them with get_mcp_file using the path the backend returned."
+        : "");
 
     const server = new Server(
       { name: packageJson.name, version: packageJson.version },
@@ -145,6 +187,34 @@ async function main(): Promise<void> {
               required: ["mcp", "toolName", "arguments"],
             },
           },
+          // only advertised when there is a files dir; otherwise the model would
+          // call a tool that can never succeed.
+          ...(filesDir
+            ? [
+                {
+                  name: "get_mcp_file",
+                  description:
+                    "Fetch a file that a backend wrote to the proxy (screenshots, exports, generated reports). " +
+                    "Pass the path exactly as the backend returned it — an absolute path inside the proxy files dir, a name relative to it, and /files/... URLs all work. " +
+                    "Returns the file as an embedded resource (uri, mimeType, base64 blob). " +
+                    "maxBytes allows a larger file than the default.",
+                  inputSchema: {
+                    type: "object",
+                    properties: {
+                      path: {
+                        type: "string",
+                        description: "Path the backend returned, e.g. /tmp/mcp-lazy-proxy-files/out/shot.png.",
+                      },
+                      maxBytes: {
+                        type: "number",
+                        description: `Optional size limit (default ${DEFAULT_INLINE_MAX_BYTES}).`,
+                      },
+                    },
+                    required: ["path"],
+                  },
+                },
+              ]
+            : []),
         ],
       };
     });
@@ -189,6 +259,52 @@ async function main(): Promise<void> {
         return result;
       }
 
+      // get_mcp_file: hand back a file a backend wrote into the files dir, so a
+      // client that cannot reach the proxy host (or runs over stdio) still gets
+      // the bytes. containment checks live in resolveWithin.
+      if (name === "get_mcp_file") {
+        // not advertised without a files dir, but a client can still call it by
+        // name, so answer with a reason instead of failing through the catch.
+        if (!filesDir) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "get_mcp_file is unavailable: no backend sets filesEnv, so there is no files directory",
+              },
+            ],
+            isError: true,
+          };
+        }
+        const raw = String(args?.path ?? "");
+        const maxBytes = args?.maxBytes != null ? Number(args.maxBytes) : DEFAULT_INLINE_MAX_BYTES;
+        if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+          return {
+            content: [{ type: "text", text: "maxBytes must be a positive number" }],
+            isError: true,
+          };
+        }
+
+        const { meta, data } = await readFileWithin(filesDir, raw, maxBytes);
+
+        const uri = filesUrlBase
+          ? `${filesUrlBase}${encodeURI(meta.path)}`
+          : `file://${join(filesDir, meta.path)}`;
+
+        return {
+          content: [
+            {
+              type: "resource",
+              resource: {
+                uri,
+                mimeType: meta.mimeType,
+                blob: data.toString("base64"),
+              },
+            },
+          ],
+        };
+      }
+
       // direct call to an injected favorite tool: route to its owning backend.
       const { owner: favoriteOwner } = await backends.favoriteTools();
       const ownerObj = favoriteOwner.get(name);
@@ -226,8 +342,11 @@ async function main(): Promise<void> {
       port,
       buildServer,
       expectedToken: token,
+      filesDir,
       onShutdown: shutdown,
     });
+
+    filesUrlBase = `http://${publicHost(host)}:${getPort()}/files/`;
 
     const summary = {
       transport: "http",
