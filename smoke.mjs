@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,7 +102,12 @@ function runCli(args, env) {
 // ---- stdio (local) mode ---------------------------------------------------
 
 const lazyConfig = writeConfig("lazy", {
-  stub: stubBackend({ instruction: "Stub backend for smoke tests." }),
+  stub: stubBackend({ instruction: "Stub backend for smoke tests.", filesEnv: "IMAGE_DIR" }),
+  // explicit env must win over the IMAGE_DIR the proxy injects via filesEnv.
+  stubAlt: stubBackend({
+    filesEnv: "IMAGE_DIR",
+    env: { IMAGE_DIR: join(TMP, "alt-images"), STUB_NAME: "alt" },
+  }),
 });
 
 await check("stdio: exposes only get_mcp_tools and call_mcp_tool", () =>
@@ -337,10 +342,14 @@ await check("cli: http mode refuses to start without MCP_AUTH_TOKEN", () => {
 // ---- HTTP (shared) mode ---------------------------------------------------
 
 const TOKEN = "smoke-test-token";
+// same 1x1 png the stub writes into IMAGE_DIR.
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 let proxy;
 try {
   proxy = await startHttpProxy(lazyConfig, TOKEN);
-  const base = `http://127.0.0.1:${proxy.port}/mcp`;
+  const origin = `http://127.0.0.1:${proxy.port}`;
+  const base = `${origin}/mcp`;
+  const auth = { Authorization: `Bearer ${TOKEN}` };
 
   const withHttp = (fn, token = TOKEN) =>
     withClient(
@@ -376,6 +385,49 @@ try {
     console.log("  status:", res.status);
     assert(res.status === 404, `expected 404, got ${res.status}`);
   });
+
+  await check("http: backend files are downloadable with the auth token", () =>
+    withHttp(async (client) => {
+      // this spawns the stub, which writes its boot file into IMAGE_DIR.
+      await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stub" } });
+      const res = await fetch(`${origin}/files/stub-boot.png`, { headers: auth });
+      const body = Buffer.from(await res.arrayBuffer());
+      console.log("  /files:", res.status, res.headers.get("content-type"), body.length, "bytes");
+      assert(res.status === 200, `expected 200, got ${res.status}`);
+      assert(body.equals(Buffer.from(PNG, "base64")), "served bytes differ from backend output");
+      assert(res.headers.get("x-content-type-options") === "nosniff", "missing nosniff header");
+      assert(/^attachment/.test(res.headers.get("content-disposition") ?? ""), "missing attachment disposition");
+    }));
+
+  await check("http: /files requires a token", async () => {
+    const res = await fetch(`${origin}/files/stub-boot.png`);
+    console.log("  status:", res.status);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await check("http: /files rejects traversal and escaping symlinks", async () => {
+    // ten ".." segments reach /etc/hostname from the files dir on any layout.
+    const escape = "%2e%2e%2f".repeat(10) + "etc%2fhostname";
+    const paths = [`/files/${escape}`, "/files/stub-escape", "/files/nope.png"];
+    for (const path of paths) {
+      const res = await fetch(`${origin}${path}`, { headers: auth });
+      console.log("  ", path.slice(0, 48), res.status);
+      assert(res.status === 404, `${path}: expected 404, got ${res.status}`);
+    }
+  });
+
+  await check("http: an explicit IMAGE_DIR wins over the proxy files dir", () =>
+    withHttp(async (client) => {
+      // this spawns stubAlt, which honours its own env.IMAGE_DIR over filesEnv.
+      await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stubAlt" } });
+      assert(
+        existsSync(join(TMP, "alt-images", "alt-boot.png")),
+        "backend did not write to its explicit IMAGE_DIR",
+      );
+      const res = await fetch(`${origin}/files/alt-boot.png`, { headers: auth });
+      console.log("  /files/alt-boot.png:", res.status);
+      assert(res.status === 404, `expected 404, got ${res.status}`);
+    }));
 
   await check("http: GET /mcp without a session id returns 404", async () => {
     const res = await fetch(base, {

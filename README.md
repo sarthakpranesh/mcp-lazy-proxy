@@ -134,6 +134,13 @@ Notes:
 - **Auth is mandatory.** In HTTP mode the proxy refuses to start unless `MCP_AUTH_TOKEN` is set. Every request to `/mcp` must carry `Authorization: Bearer <token>` or it is rejected with `401`.
 - **Secrets stay out of the mounted config.** `mcp.json` can reference environment variables with `${VAR}` (e.g. `"Authorization": "Bearer ${GITHUB_TOKEN}"`) and they are substituted from `process.env` at load time.
 - **Config** still comes from `--config` (default `/app/mcp.json`, matching the container mount). The CLI flags are: `--transport http` (stdio is the default), `--port <n>` (default `3000`), `--host <addr>` (default `0.0.0.0`).
+- **Files written by backends are downloadable.** A backend opts in with `filesEnv` — the name of the env var it reads (`"IMAGE_DIR"` for figma) — and the proxy points that var at a private dir under the OS temp dir, created at startup (HTTP mode only). The dir is served at `GET /files/<path>`, behind the same auth. Contents are temporary: the proxy deletes the dir on shutdown, so a hard crash can leave the last run's files behind.
+
+```bash
+curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  http://localhost:3000/files/image34.png -o image34.png
+```
+
 **Rotating the bearer token:** generate a new value, set it in `.env` as `MCP_AUTH_TOKEN`, then `docker compose up -d` to recreate the container. Existing clients must be updated with the new token — old tokens are rejected immediately because each request is checked against the current value.
 
 ## Configuration
@@ -149,6 +156,7 @@ The proxy takes a single JSON config file via `--config <path>`. It must have an
 | `command`     | Local    | Executable to spawn for a local stdio MCP server.                           |
 | `args`        | No       | Arguments passed to the local command.                                      |
 | `env`         | No       | Extra environment variables for the local command.                           |
+| `filesEnv`    | No       | Opt in: env var that receives the shared files dir, so the backend's output can be fetched from `/files/*` (e.g. `IMAGE_DIR` for figma). Nothing is injected unless set. |
 | `instruction` | No       | Human/LLM-facing description of what this MCP is for. Shown in the catalog and returned by `get_mcp_tools`. Falls back to the mcp server's own instructions when omitted. |
 | `favorite`    | No       | `true` to inject this backend's tool schemas eagerly into the model context instead of keeping it lazy. See [Favorites](#favorites). |
 

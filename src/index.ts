@@ -2,7 +2,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { homedir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { BackendManager } from "./backend.js";
 import { startHttpServer } from "./server.js";
@@ -52,18 +54,37 @@ function parseArgs(argv: string[]): CliArgs {
   return { configPath, transport, port, host };
 }
 
+// create the shared scratch dir that backends write into and /files/* serves.
+function prepareFilesDir(): string {
+  // tmp is writable by any user, so no image or volume setup is needed. 0700
+  // keeps backend artifacts private on multi-user hosts.
+  const dir = join(tmpdir(), "mcp-lazy-proxy-files");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 async function main(): Promise<void> {
   // parse CLI, load config, and build the backend manager.
   const { configPath, transport, port, host } = parseArgs(process.argv.slice(2));
+
+  // /files is HTTP-only, so stdio gets no dir and no filesEnv injection.
+  const filesDir = transport === "http" ? prepareFilesDir() : undefined;
+
   const config = loadConfig(configPath);
-  const backends = new BackendManager(config.mcpServers);
+  const backends = new BackendManager(config.mcpServers, filesDir);
 
   // precache the favorite backend list
   await backends.favoriteTools();
 
-  // shared shutdown: close all backend connections.
+  // shared shutdown: close all backend connections and drop backend artifacts.
   const shutdown = async () => {
     await backends.closeAll();
+    if (!filesDir) return;
+    try {
+      rmSync(filesDir, { recursive: true, force: true });
+    } catch (err) {
+      console.error("[mcp-lazy-proxy] could not remove files dir:", (err as Error).message);
+    }
   };
 
   // build a fresh MCP server with the meta-tool handlers wired in.
@@ -226,6 +247,8 @@ async function main(): Promise<void> {
       port,
       buildServer,
       expectedToken: token,
+      // filesDir is set whenever transport is http (see above).
+      filesDir: filesDir!,
       onShutdown: shutdown,
     });
 
