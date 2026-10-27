@@ -27,14 +27,13 @@ version="${version:-$default}"
 #    npm version fails if the version is unchanged or the tag already exists.
 npm version "$version"
 
-# 5. A version ending in "-<alphanumeric>" (e.g. 0.1.14-rc1) is a prerelease:
-#    it needs an npm dist-tag and must not move Docker's ":latest".
+# 5. A version ending in "-<alphanumeric>" is a prerelease: use its channel as
+#    the npm dist-tag (0.1.14-rc1 -> rc) and keep Docker's ":latest" stable.
 prerelease=""
 publish_args=()
-if [[ "$version" == *-[A-Za-z0-9]* ]]; then
+if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-([A-Za-z]+) ]]; then
   prerelease=1
-  tag="$(gum input --placeholder "rc" --prompt "Dist-tag > ")"
-  publish_args=(--tag "${tag:-rc}")
+  publish_args=(--tag "${BASH_REMATCH[1]}")
 fi
 npm publish "${publish_args[@]}"
 git push origin "v$version"
