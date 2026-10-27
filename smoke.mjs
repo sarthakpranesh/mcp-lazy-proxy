@@ -13,6 +13,12 @@ const DIST = fileURLToPath(new URL("./dist/index.js", import.meta.url));
 const STUB = fileURLToPath(new URL("./test/stub-backend.mjs", import.meta.url));
 const TMP = mkdtempSync(join(tmpdir(), "mcp-proxy-smoke-"));
 
+// the 1x1 png the stub writes into the files dir (IMAGE_DIR / filesEnv).
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+// the proxy's files dir is a fixed name under the OS temp dir, so the smoke test
+// can hand get_mcp_file the same absolute path a backend would print.
+const FILES_DIR = join(tmpdir(), "mcp-lazy-proxy-files");
+
 // per-check budget: a hung backend or proxy must fail the check, not the run.
 const CHECK_TIMEOUT_MS = 20_000;
 
@@ -110,17 +116,48 @@ const lazyConfig = writeConfig("lazy", {
   }),
 });
 
-await check("stdio: exposes only get_mcp_tools and call_mcp_tool", () =>
+await check("stdio: exposes the meta-tools, plus get_mcp_file when a files dir exists", () =>
   withStdio(lazyConfig)(async (client) => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     console.log("  tools:", names.join(", "));
-    assert(names.length === 2, `expected 2 tools, got ${names.length}`);
-    assert(names.join() === "get_mcp_tools,call_mcp_tool", `unexpected tools: ${names}`);
+    assert(names.length === 3, `expected 3 tools, got ${names.length}`);
+    assert(names.join() === "get_mcp_tools,call_mcp_tool,get_mcp_file", `unexpected tools: ${names}`);
     const call = tools.find((t) => t.name === "call_mcp_tool");
     assert(call.inputSchema.required.join() === "mcp,toolName,arguments", "call_mcp_tool schema drifted");
     const get = tools.find((t) => t.name === "get_mcp_tools");
     assert(get.inputSchema.required.join() === "mcp", "get_mcp_tools schema drifted");
+    const file = tools.find((t) => t.name === "get_mcp_file");
+    assert(file.inputSchema.required.join() === "path", "get_mcp_file schema drifted");
+  }),
+);
+
+await check("stdio: get_mcp_file returns backend bytes without http", () =>
+  withStdio(lazyConfig)(async (client) => {
+    // the stub writes its boot file when the proxy spawns it. a relative name is
+    // used here because a stdio client's env (and therefore TMPDIR) is sanitised
+    // by the SDK, so the host cannot guess the absolute path.
+    await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stub" } });
+    const r = await client.callTool({ name: "get_mcp_file", arguments: { path: "stub-boot.png" } });
+    console.log("  block:", r.content[0].type, r.content[0].resource?.mimeType, r.isError ? r.content[0].text : "");
+    assert(r.content[0].type === "resource" && r.content[0].resource.mimeType === "image/png", "resource block missing");
+    assert(r.content[0].resource.blob === PNG, "bytes differ from backend output");
+  }),
+);
+
+await check("stdio: get_mcp_file rejects traversal and oversized files", () =>
+  withStdio(lazyConfig)(async (client) => {
+    await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stub" } });
+    const escape = await client.callTool({ name: "get_mcp_file", arguments: { path: "../../etc/hostname" } });
+    console.log("  traversal:", escape.content[0].text);
+    assert(escape.isError === true, "traversal was not rejected");
+
+    const big = await client.callTool({
+      name: "get_mcp_file",
+      arguments: { path: "stub-boot.png", maxBytes: 4 },
+    });
+    console.log("  oversized:", big.content[0].text);
+    assert(big.isError === true && big.content[0].text.includes("maxBytes"), "size limit not enforced");
   }),
 );
 
@@ -259,6 +296,7 @@ await check("favorites: eager schemas are injected with a backend__tool prefix",
     assert(names.includes("get_mcp_tools") && names.includes("call_mcp_tool"), "meta-tools missing");
     assert(names.includes("fav__echo"), `favorite tool not injected: ${names}`);
     assert(!names.some((n) => n.startsWith("lazy__")), "lazy backend should not be injected");
+    assert(!names.includes("get_mcp_file"), "get_mcp_file advertised without any filesEnv backend");
     assert(tools.length === 7, `expected 7 tools, got ${tools.length}`);
   }),
 );
@@ -342,8 +380,6 @@ await check("cli: http mode refuses to start without MCP_AUTH_TOKEN", () => {
 // ---- HTTP (shared) mode ---------------------------------------------------
 
 const TOKEN = "smoke-test-token";
-// same 1x1 png the stub writes into IMAGE_DIR.
-const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 let proxy;
 try {
   proxy = await startHttpProxy(lazyConfig, TOKEN);
@@ -415,6 +451,18 @@ try {
       assert(res.status === 404, `${path}: expected 404, got ${res.status}`);
     }
   });
+
+  await check("http: get_mcp_file serves bytes without a reachable /files route", () =>
+    withHttp(async (client) => {
+      // the stub writes its boot file when the proxy spawns it.
+      await client.callTool({ name: "get_mcp_tools", arguments: { mcp: "stub" } });
+      // every handle a caller might have: plain name, absolute path, /files URL.
+      for (const path of ["stub-boot.png", join(FILES_DIR, "stub-boot.png"), `${origin}/files/stub-boot.png`]) {
+        const r = await client.callTool({ name: "get_mcp_file", arguments: { path } });
+        console.log("  ", path.slice(-28), r.content[0].type);
+        assert(r.content[0].type === "resource" && r.content[0].resource.blob === PNG, `bad bytes for ${path}`);
+      }
+    }));
 
   await check("http: an explicit IMAGE_DIR wins over the proxy files dir", () =>
     withHttp(async (client) => {

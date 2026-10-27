@@ -30,8 +30,8 @@ export interface HttpServerOptions {
   buildServer: () => McpServer;
   /** expected bearer token; when provided, requests without it return 401. */
   expectedToken?: string;
-  /** directory served at GET /files/*. */
-  filesDir: string;
+  /** directory served at GET /files/*; unset when no backend opts into filesEnv. */
+  filesDir?: string;
   /** how long a session may sit idle before it is closed and evicted (ms). 0 disables. */
   sessionIdleTimeoutMs?: number;
   /** called on graceful shutdown to close backends. */
@@ -100,7 +100,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<{
 
     // files written by backends (figma screenshots, exports, ...) are
     // downloadable over the same authenticated port the client already uses.
-    if (req.method === "GET" && req.url?.startsWith("/files/")) {
+    if (filesDir && req.method === "GET" && req.url?.startsWith("/files/")) {
       await serveFile(filesDir, req, res);
       return;
     }
